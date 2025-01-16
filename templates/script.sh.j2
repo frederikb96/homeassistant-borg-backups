@@ -1,4 +1,5 @@
 #!/bin/sh
+{
 /usr/local/bin/docker pull alpine:latest
 /usr/local/bin/docker run \
   -e BORG_REPO="{{ borg_repo }}" \
@@ -12,3 +13,4 @@
   --rm --name borg-backup \
   alpine:latest sh -c 'apk add --no-cache borgbackup openssh && borg create --stats --progress "${BORG_REPO}::$(date +%Y-%m-%d-%H-%M)" $BACKUP_DIRS && borg prune --list "${BORG_REPO}" --keep-daily=7 --keep-weekly=4 --keep-monthly=6'
 /usr/bin/find /backup -type f -mtime +7 -exec /bin/rm -f {} \;
+} > /homeassistant/.tmp-borg-backup.log 2>&1

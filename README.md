@@ -1,96 +1,94 @@
 # Automated Borg Backup with Home Assistant OS
 
-This guide explains how to set up automated backups for Home Assistant OS using **BorgBackup** and a **cron job**. The backups are stored remotely on BorgBase and old files are pruned automatically.
+This guide explains how to set up automated backups for Home Assistant OS using **BorgBackup** and a **cron job**. The backups are stored remotely on BorgBase, and old files are pruned automatically. The deployment of the backup script is automated using Ansible.
 
 ---
 
 ## Prerequisites
 
 - **Home Assistant OS** with Advanced SSH Add-on installed.
-- Automatic backups enabled in Home Assistant to local storage. 
+- Automatic backups enabled in Home Assistant to local storage.
 - A BorgBase repository ready for use.
+- Ansible installed on your local machine.
 
 ---
 
 ## Steps to Set Up
 
-### 1. SSH into Home Assistant
-Access your Home Assistant machine:
-```sh
-ssh root@ha-ip
-```
+### 1. Set Up the Ansible Repository
+
+1. Clone the repo.
+
+2. Copy the variable template file and update it with your specific settings:
+   ```sh
+   cp group_vars/all.yml.tpl group_vars/all.yml
+   ```
+
+3. Edit `group_vars/all.yml` to set the required variables:
+   - `borg_repo`: Your BorgBase repository URL.
+   - `borg_passphrase`: Your Borg repository passphrase.
+   - `backup_dirs`: The directory to be backed up.
+
+   Example:
+   ```yaml
+   borg_repo: 'ssh://user@host.repo.borgbase.com/./repo'
+   borg_passphrase: 'YOUR-PASSPHRASE'
+   backup_dirs: '/backup'
+   ```
 
 ---
 
-### 2. Create Directories and Generate SSH Keys
-Prepare the directory structure and generate an SSH key for BorgBase:
+### 2. Run the Ansible Playbook to Deploy the Backup Script
+
+Execute the Ansible playbook to deploy the backup script to your Home Assistant machine:
 ```sh
-cd /homeassistant
-mkdir -p borg/.ssh
-ssh-keygen -t ed25519 -f borg/.ssh/borgbase-partial
+ansible-playbook main.yml
 ```
 
-Upload the public key (`borg/.ssh/borgbase-partial.pub`) to your BorgBase repository.
+This will:
+- Deploy the backup script `/homeassistant/borg/my-backup.sh` to the target machine.
+- Ensure the script has executable permissions (`0755`).
 
 ---
 
-### 3. Create the Backup Script
-Create a backup script:
-```sh
-nano /homeassistant/borg/my-backup.sh
-```
+### 3. SSH into Home Assistant and Configure Manually
 
-Add the following content:
-- replace `BORG_PASSPHRASE` with your Borg passphrase.
-- replace `BORG_REPO` with your Borg repository.
+1. Access your Home Assistant machine:
+   ```sh
+   ssh root@ha-ip
+   ```
 
-```sh
-#!/bin/sh
-/usr/local/bin/docker pull alpine:latest
-/usr/local/bin/docker run \
-  -e BORG_REPO="ssh://user@host.repo.borgbase.com/./repo" \
-  -e BORG_RSH="ssh -i /root/.ssh/borgbase-partial" \
-  -e BORG_PASSPHRASE=YOUR-PHRASE \
-  -e BACKUP_DIRS=/backup \
-  -v /mnt/data/supervisor/homeassistant/borg:/root \
-  -v /mnt/data/supervisor/backup:/backup:ro \
-  --cap-add SYS_ADMIN --device /dev/fuse \
-  --security-opt apparmor:unconfined \
-  --rm --name borg-backup \
-  alpine:latest sh -c 'apk add --no-cache borgbackup openssh && borg create --stats --progress "${BORG_REPO}::$(date +%Y-%m-%d-%H-%M)" $BACKUP_DIRS && borg prune --list "${BORG_REPO}" --keep-daily=7 --keep-weekly=4 --keep-monthly=6'
-/usr/bin/find /backup -type f -mtime +7 -exec /bin/rm -f {} \;
-```
+2. Create the required directories and generate SSH keys for BorgBase:
+   ```sh
+   mkdir -p /homeassistant/borg/.ssh
+   ssh-keygen -t ed25519 -f /homeassistant/borg/.ssh/borgbase-partial
+   ```
 
-**Old Backups**: Automatically deletes files in `/backup` older than 7 days.
-
-
-Make the script executable:
-```sh
-chmod +x /homeassistant/borg/my-backup.sh
-```
+3. Upload the public key (`/homeassistant/borg/.ssh/borgbase-partial.pub`) to your BorgBase repository.
 
 ---
 
 ### 4. Configure the Advanced SSH Add-on
 
-Additional packages:
-```sh
-cronie
-```
+1. Install additional packages:
+   ```sh
+   cronie
+   ```
 
-Additional init commands:
-```sh
-crond -f &
+2. Add the cron job for automatic backups:
+   ```sh
+   crond -f &
+   (echo '15 1 * * * /homeassistant/borg/my-backup.sh >> /dev/null 2>&1') | crontab -
+   ```
 
-(echo '15 1 * * * /homeassistant/borg/my-backup.sh >> /dev/null 2>&1') | crontab -
-```
-Choose the time for the cron job to run.
+   Choose the time for the cron job to run (`15 1` represents 1:15 AM daily).
 
-Save and restart the SSH add-on.
+3. Save and restart the Advanced SSH Add-on.
 
 ---
 
 ### 5. Verify and Test
+
 1. Test the backup script manually:
    ```sh
    /homeassistant/borg/my-backup.sh
@@ -101,16 +99,13 @@ Save and restart the SSH add-on.
    crontab -l
    ```
 
-3. Check BorgBase to verify that backups are being uploaded.
+3. Verify that backups are being uploaded to BorgBase.
 
 ---
 
 ## Maintenance
-- **Logs**: Redirect cron output to a log file for debugging:
-  ```sh
-  15 1 * * * /homeassistant/borg/my-backup.sh >> /homeassistant/borg-backup.log 2>&1
-  ```
 
----
-
-That's it! Your Home Assistant setup is now configured to back up automatically to BorgBase. 🎉
+- **Logs**: Redirect cron output to a log file for debugging by modifying the cron job:
+   ```sh
+   15 1 * * * /homeassistant/borg/my-backup.sh >> /homeassistant/borg-backup.log 2>&1
+   ```
