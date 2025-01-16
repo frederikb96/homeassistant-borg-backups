@@ -1,0 +1,8 @@
+--- 
+- hosts: remote
+  tasks:
+    - name: Deploy backup script
+      template:
+        src: templates/script.sh.j2
+        dest: /homeassistant/borg/my-backup.sh
+        mode: '0755'

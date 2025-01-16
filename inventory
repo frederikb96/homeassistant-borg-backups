@@ -1,0 +1,2 @@
+[remote]
+ha ansible_host=ha.tail ansible_user=root
