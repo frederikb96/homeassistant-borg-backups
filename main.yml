@@ -1,4 +1,4 @@
---- 
+---
 - hosts: remote
   tasks:
     - name: Create backup directory
@@ -6,6 +6,12 @@
         path: /homeassistant/borg
         state: directory
         mode: '0755'
+    - name: Deploy backup secrets
+      template:
+        src: templates/borg-secrets.env.j2
+        dest: /homeassistant/borg/borg-secrets.env
+        mode: '0600'
+      no_log: true
     - name: Deploy backup script
       template:
         src: templates/script.sh.j2

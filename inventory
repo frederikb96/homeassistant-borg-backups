@@ -1,2 +1,2 @@
 [remote]
-ha ansible_host=ha.tail ansible_user=root
+ha ansible_host=100.107.92.39 ansible_user=root ansible_ssh_private_key_file=~/.ssh/id_ed25519 ansible_ssh_common_args='-o IdentitiesOnly=yes -o ConnectTimeout=30 -o ServerAliveInterval=5' ansible_ssh_transfer_method=piped
