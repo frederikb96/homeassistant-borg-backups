@@ -1,16 +1,112 @@
 #!/bin/sh
+LOG=/homeassistant/borg-backup.log
+LOG_KEEP_LINES=20000
+RETRY_DELAY=900
+LOCAL_MAX_AGE_DAYS=8
+LOCAL_MIN_KEEP=4
+HA_API=http://supervisor/core/api
+
+# crond only inherits SUPERVISOR_TOKEN when it happens to have been started from a login
+# shell that sourced this profile script -- true today, not guaranteed to survive the next
+# add-on restart. Sourcing it here makes the HA calls below work regardless of how cron got
+# started.
+[ -n "${SUPERVISOR_TOKEN}" ] || . /etc/profile.d/homeassistant.sh 2>/dev/null
+
+. /homeassistant/borg/borg-secrets.env
+
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') | $*"
+}
+
+borg_run() {
+  /usr/local/bin/docker run \
+    -e BORG_REPO="${BORG_REPO}" \
+    -e BORG_RSH="ssh -i /root/.ssh/borgbase-partial -o ServerAliveInterval=15 -o ServerAliveCountMax=3" \
+    -e BORG_PASSPHRASE="${BORG_PASSPHRASE}" \
+    -e BACKUP_DIRS="${BACKUP_DIRS}" \
+    -v /mnt/data/supervisor/homeassistant/borg:/root \
+    -v /mnt/data/supervisor/backup:/backup:ro \
+    --cap-add SYS_ADMIN --device /dev/fuse \
+    --security-opt apparmor:unconfined \
+    --rm --name borg-backup \
+    alpine:latest sh -c 'apk add --no-cache borgbackup openssh && borg create --stats "${BORG_REPO}::$(date +%Y-%m-%d-%H-%M)" $BACKUP_DIRS && borg prune --list "${BORG_REPO}" --keep-daily=7 --keep-weekly=4 --keep-monthly=6'
+}
+
+prune_local() {
+  # Keeps the newest LOCAL_MIN_KEEP files no matter their age (floor), and
+  # deletes anything beyond that floor once it's older than LOCAL_MAX_AGE_DAYS
+  # (ceiling). Runs unconditionally - regardless of whether the offsite push
+  # above succeeded - so a stuck BorgBase repo can never fill the disk, while
+  # a long outage still always leaves the most recent backups in place.
+  i=0
+  ls -t /backup | while IFS= read -r f; do
+    i=$((i + 1))
+    if [ "$i" -le "$LOCAL_MIN_KEEP" ]; then
+      continue
+    fi
+    if [ -n "$(find "/backup/$f" -maxdepth 0 -mtime "+${LOCAL_MAX_AGE_DAYS}" 2>/dev/null)" ]; then
+      rm -f "/backup/$f"
+    fi
+  done
+}
+
+publish_status() {
+  # Reports to Home Assistant so monitoring never has to read this log -- the
+  # add-on's own Supervisor token reaches the core API through the Supervisor's
+  # proxy, so no separate HA credential is needed here. A curl failure (HA
+  # restarting, network blip) falls through silently: it must never affect the
+  # script's own exit code, and it is still captured by the log redirect below.
+  status="$1"
+  curl -s -o /dev/null -X POST \
+    -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" -H "Content-Type: application/json" \
+    -d "{\"entity_id\":\"input_text.borg_backup_last_status\",\"value\":\"${status}\"}" \
+    "${HA_API}/services/input_text/set_value"
+  if [ "${rc}" -eq 0 ]; then
+    now="$(date -u +%s)"
+    curl -s -o /dev/null -X POST \
+      -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" -H "Content-Type: application/json" \
+      -d "{\"entity_id\":\"input_datetime.borg_backup_last_success\",\"timestamp\":${now}}" \
+      "${HA_API}/services/input_datetime/set_datetime"
+    curl -s -o /dev/null -X POST \
+      -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" -H "Content-Type: application/json" \
+      -d "{\"entity_id\":\"input_number.borg_backup_last_success_epoch\",\"value\":${now}}" \
+      "${HA_API}/services/input_number/set_value"
+  fi
+}
+
 {
-/usr/local/bin/docker pull alpine:latest
-/usr/local/bin/docker run \
-  -e BORG_REPO="{{ borg_repo }}" \
-  -e BORG_RSH="ssh -i /root/.ssh/borgbase-partial" \
-  -e BORG_PASSPHRASE={{ borg_passphrase }} \
-  -e BACKUP_DIRS={{ backup_dirs }} \
-  -v /mnt/data/supervisor/homeassistant/borg:/root \
-  -v /mnt/data/supervisor/backup:/backup:ro \
-  --cap-add SYS_ADMIN --device /dev/fuse \
-  --security-opt apparmor:unconfined \
-  --rm --name borg-backup \
-  alpine:latest sh -c 'apk add --no-cache borgbackup openssh && borg create --stats --progress "${BORG_REPO}::$(date +%Y-%m-%d-%H-%M)" $BACKUP_DIRS && borg prune --list "${BORG_REPO}" --keep-daily=7 --keep-weekly=4 --keep-monthly=6'
-/usr/bin/find /backup -type f -mtime +7 -exec /bin/rm -f {} \;
-} > /homeassistant/.tmp-borg-backup.log 2>&1
+  log "run start"
+  /usr/local/bin/docker pull alpine:latest
+
+  if borg_run; then
+    rc=0
+  else
+    rc=$?
+    log "attempt 1 failed (exit ${rc}), retrying in ${RETRY_DELAY}s"
+    sleep "${RETRY_DELAY}"
+    if borg_run; then
+      rc=0
+      log "attempt 2 succeeded"
+    else
+      rc=$?
+      log "attempt 2 failed (exit ${rc})"
+    fi
+  fi
+
+  if [ "${rc}" -eq 0 ]; then
+    log "borg ok"
+    publish_status "success"
+  else
+    log "borg failed, keeping newest ${LOCAL_MIN_KEEP} local backups regardless"
+    publish_status "borg failed after 2 attempts (exit ${rc})"
+  fi
+
+  prune_local
+  log "local prune done (floor ${LOCAL_MIN_KEEP} files, ceiling ${LOCAL_MAX_AGE_DAYS} days)"
+
+  log "run end (exit ${rc})"
+} >> "${LOG}" 2>&1
+
+tail -n "${LOG_KEEP_LINES}" "${LOG}" > "${LOG}.tmp" && mv "${LOG}.tmp" "${LOG}"
+
+exit "${rc}"
