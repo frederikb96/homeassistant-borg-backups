@@ -22,6 +22,7 @@ This guide explains how to set up automated backups for Home Assistant OS using 
 2. Copy the variable template file and update it with your specific settings:
    ```sh
    cp group_vars/all.yml.tpl group_vars/all.yml
+   chmod 600 group_vars/all.yml  # cp inherits your umask, which can leave the passphrase world-readable
    ```
 
 3. Edit `group_vars/all.yml` to set the required variables:
