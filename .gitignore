@@ -1,1 +1,4 @@
 .vscode
+
+# Private Claude context (separate git repo)
+.claude/
